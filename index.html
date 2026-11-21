@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>JalRakshak – Water leak detection dashboard</title>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;600;700&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#f2f6f7;--card:#fff;--ink:#12303a;--mute:#5b7580;--line:#d5e1e5;--water:#0b7a96;--fill:#d6eef4;--bad:#d6452f;--warn:#c98a00;--ok:#2a8f5b;
+box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px);color-scheme:light}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#0d1d23;--card:#142830;--ink:#e3f1f4;--mute:#8fb0ba;--line:#244049;--water:#4cc3de;--fill:#17414d;--bad:#ff7a63;--warn:#e8b53a;--ok:#5cc58c;color-scheme:dark}}
+:root[data-theme="dark"]{--bg:#0d1d23;--card:#142830;--ink:#e3f1f4;--mute:#8fb0ba;--line:#244049;--water:#4cc3de;--fill:#17414d;--bad:#ff7a63;--warn:#e8b53a;--ok:#5cc58c;color-scheme:dark}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.5 "Instrument Sans",system-ui,-apple-system,Segoe UI,sans-serif}
+main{max-width:1040px;margin:0 auto;padding:20px 16px 40px}
+h1{font-size:1.7rem;margin:0}
+h2{font-size:1.05rem;margin:0 0 10px}
+.sub{color:var(--mute);margin:2px 0 18px}
+.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:14px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px}
+.stat b{display:block;font-size:1.7rem;line-height:1.1}
+.stat span{color:var(--mute);font-size:.85rem}
+.grid{display:grid;grid-template-columns:320px 1fr;gap:14px}
+@media(max-width:800px){.grid{grid-template-columns:1fr}.stat b{font-size:1.3rem}}
+.row{display:flex;align-items:center;justify-content:space-between;gap:8px;width:100%;padding:10px;border:1px solid transparent;border-radius:8px;background:none;color:inherit;font:inherit;text-align:left;cursor:pointer}
+.row:hover{background:var(--bg)}
+.row.sel{border-color:var(--water);background:var(--fill)}
+.row small{color:var(--mute);display:block}
+.pill{padding:2px 10px;border-radius:99px;font-size:.8rem;font-weight:600;border:1px solid currentColor;white-space:nowrap}
+.ok{color:var(--ok)}.leak{color:var(--bad)}.over{color:var(--warn)}
+.btns{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0}
+button.act{font:inherit;font-weight:600;padding:8px 14px;border-radius:8px;border:1px solid var(--water);background:var(--water);color:#fff;cursor:pointer}
+button.act.alt{background:none;color:var(--water)}
+button:focus-visible{outline:3px solid var(--warn);outline-offset:2px}
+.chart{overflow-x:auto}
+svg{width:100%;min-width:560px;height:auto;display:block}
+.alert{border-left:4px solid var(--bad);padding:8px 12px;margin:8px 0;background:var(--bg);border-radius:6px}
+.alert.over{border-color:var(--warn)}
+.legend{color:var(--mute);font-size:.82rem;margin-top:6px}
+.tip{margin-top:12px;color:var(--mute);font-size:.9rem}
+</style>
+</head>
+<body>
+<main>
+<h1>JalRakshak</h1>
+<p class="sub">Block A · 8 flats · simulated hourly flow data, last 7 days. Model learns days 1–4, then watches days 5–7.</p>
+
+<section class="stats" aria-label="Summary">
+  <div class="card stat"><b id="sLeaks">0</b><span>Active alerts</span></div>
+  <div class="card stat"><b id="sWaste">0 L</b><span>Water wasted (3 days)</span></div>
+  <div class="card stat"><b id="sMoney">₹0</b><span>Bill saved if fixed</span></div>
+</section>
+
+<div class="grid">
+  <section class="card" aria-label="Block view">
+    <h2>Society block view</h2>
+    <div id="list"></div>
+  </section>
+  <section class="card" aria-label="Selected flat">
+    <h2 id="title">Flat</h2>
+    <div class="btns">
+      <button class="act" id="bLeak">Inject night leak</button>
+      <button class="act alt" id="bOver">Inject tank overflow</button>
+      <button class="act alt" id="bReset">Reset data</button>
+    </div>
+    <div class="chart"><svg id="chart" viewBox="0 0 700 230" role="img" aria-label="Hourly water flow chart"></svg></div>
+    <p class="legend">Line: litres per hour. Shaded band: learned normal for that hour of day. Red dots: unusual flow.</p>
+    <div id="alerts"></div>
+    <p class="tip">Try it: pick a flat, press “Inject night leak”, and watch the model flag it. Estimated at ₹35 per 1,000 L.</p>
+  </section>
+</div>
+</main>
+
+<script>
+(function(){
+var PROFILE=[.05,.03,.03,.03,.05,.2,.9,1.4,.9,.5,.4,.4,.6,.5,.3,.3,.4,.7,1.1,1.3,1,.6,.3,.1];
+var IDS=['A101','A102','A103','A104','A105','A106','A107','A108'];
+var TRAIN=96,TOTAL=168,RATE=35;
+var data,sel=3;
+
+function rng(seed){return function(){seed|=0;seed=seed+0x6D2B79F5|0;var t=Math.imul(seed^seed>>>15,1|seed);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296}}
+
+function build(){
+  var r=rng(42);
+  data=IDS.map(function(id){
+    var scale=20+r()*15,a=[];
+    for(var t=0;t<TOTAL;t++){a.push(Math.max(0,scale*PROFILE[t%24]*(1+(r()-.5)*.4)+r()*.2))}
+    return a;
+  });
+  for(var t=110;t<TOTAL;t++)data[3][t]+=7;        // A104: hidden leak from day 5
+  data[6][4+120]+=90;data[6][5+120]+=60;          // A107: tank overflow at 4 AM on day 6
+  data[6][4+144]+=85;data[6][5+144]+=55;
+}
+
+function learn(a){
+  var m=[],s=[];
+  for(var h=0;h<24;h++){
+    var v=[];for(var d=0;d<TRAIN/24;d++)v.push(a[d*24+h]);
+    var mu=v.reduce(function(x,y){return x+y},0)/v.length;
+    var sd=Math.sqrt(v.reduce(function(x,y){return x+(y-mu)*(y-mu)},0)/v.length);
+    m.push(mu);s.push(sd);
+  }
+  return{m:m,s:s};
+}
+
+function detect(i){
+  var a=data[i],b=learn(a),flags=[],waste=0,total=0,over=0,leakN=0,nightEx=[];
+  for(var t=TRAIN;t<TOTAL;t++){
+    var h=t%24,x=a[t],ex=x-b.m[h];total+=x;
+    if(ex>Math.max(3*b.s[h],3.5)){
+      flags.push(t);waste+=ex;
+      if(ex>40)over++;else{leakN++;if(h<6)nightEx.push(ex)}
+    }
+  }
+  var status=over?'over':(leakN>=6?'leak':'ok');
+  if(status==='ok'){flags=[];waste=0}
+  var rate=nightEx.length?nightEx.reduce(function(x,y){return x+y},0)/nightEx.length:0;
+  return{b:b,flags:flags,waste:waste,pct:total?waste/total*100:0,status:status,rate:rate};
+}
+
+var LABEL={ok:'Normal',leak:'Leak',over:'Overflow'};
+
+function render(){
+  var res=data.map(function(_,i){return detect(i)});
+  var alerts=0,waste=0;
+  res.forEach(function(r){if(r.status!=='ok')alerts++;waste+=r.waste});
+  document.getElementById('sLeaks').textContent=alerts;
+  document.getElementById('sWaste').textContent=Math.round(waste).toLocaleString('en-IN')+' L';
+  document.getElementById('sMoney').textContent='₹'+Math.round(waste/1000*RATE).toLocaleString('en-IN');
+
+  document.getElementById('list').innerHTML=res.map(function(r,i){
+    return '<button class="row'+(i===sel?' sel':'')+'" data-i="'+i+'"><span>Flat '+IDS[i]+'<small>Wastage '+r.pct.toFixed(0)+'%</small></span><span class="pill '+r.status+'">'+LABEL[r.status]+'</span></button>';
+  }).join('');
+  [].forEach.call(document.querySelectorAll('.row'),function(el){
+    el.onclick=function(){sel=+el.dataset.i;render()};
+  });
+
+  var r=res[sel];
+  document.getElementById('title').textContent='Flat '+IDS[sel]+' · '+LABEL[r.status];
+  drawChart(sel,r);
+
+  var msg='<p class="alert" style="border-color:var(--ok)">No unusual flow. Usage matches this flat’s normal pattern.</p>';
+  if(r.status==='leak')msg='<div class="alert"><b>Possible hidden leak.</b> A constant flow of about '+(r.rate?r.rate.toFixed(1):'few')+' L/h continues even at 3 AM. Wasted so far: '+Math.round(r.waste)+' L (₹'+Math.round(r.waste/1000*RATE)+'). Check pipes, taps and flush tanks.</div>';
+  if(r.status==='over')msg='<div class="alert over"><b>Overhead tank overflow.</b> Sudden bursts far above normal in the early morning. Wasted: '+Math.round(r.waste)+' L. Check the float valve or use a tank auto-cutoff.</div>';
+  document.getElementById('alerts').innerHTML=msg;
+}
+
+function drawChart(i,r){
+  var a=data[i],W=700,H=230,L=36,B=24,T=8,pw=W-L-6,ph=H-B-T;
+  var max=Math.max.apply(null,a.concat([20]));max=Math.ceil(max/10)*10;
+  function X(t){return L+t/(TOTAL-1)*pw}
+  function Y(v){return T+ph-v/max*ph}
+  var s='';
+  s+='<rect x="'+X(TRAIN)+'" y="'+T+'" width="'+(X(TOTAL-1)-X(TRAIN))+'" height="'+ph+'" fill="var(--fill)" opacity=".35"/>';
+  [0,.5,1].forEach(function(f){var v=max*f;s+='<line x1="'+L+'" x2="'+(W-6)+'" y1="'+Y(v)+'" y2="'+Y(v)+'" stroke="var(--line)"/><text x="'+(L-6)+'" y="'+(Y(v)+4)+'" text-anchor="end" font-size="11" fill="var(--mute)">'+Math.round(v)+'</text>'});
+  // learned normal band (upper limit)
+  var up=[];for(var t=TRAIN;t<TOTAL;t++){var h=t%24;up.push(X(t).toFixed(1)+','+Y(r.b.m[h]+Math.max(3*r.b.s[h],3.5)).toFixed(1))}
+  s+='<polyline points="'+up.join(' ')+'" fill="none" stroke="var(--mute)" stroke-dasharray="4 3" stroke-width="1.2"/>';
+  var pts=a.map(function(v,t){return X(t).toFixed(1)+','+Y(v).toFixed(1)}).join(' ');
+  s+='<polyline points="'+pts+'" fill="none" stroke="var(--water)" stroke-width="1.6"/>';
+  r.flags.forEach(function(t){s+='<circle cx="'+X(t)+'" cy="'+Y(a[t])+'" r="3" fill="var(--bad)"/>'});
+  for(var d=0;d<7;d++){s+='<text x="'+X(d*24+12)+'" y="'+(H-6)+'" text-anchor="middle" font-size="11" fill="var(--mute)">Day '+(d+1)+'</text>'}
+  s+='<text x="'+(X(TRAIN)+4)+'" y="'+(T+12)+'" font-size="11" fill="var(--mute)">Monitoring</text>';
+  s+='<text x="'+(L+4)+'" y="'+(T+12)+'" font-size="11" fill="var(--mute)">Learning</text>';
+  document.getElementById('chart').innerHTML=s;
+}
+
+document.getElementById('bLeak').onclick=function(){for(var t=150;t<TOTAL;t++)data[sel][t]+=7;render()};
+document.getElementById('bOver').onclick=function(){data[sel][148]+=90;data[sel][149]+=60;render()};
+document.getElementById('bReset').onclick=function(){build();render()};
+
+build();render();
+})();
+</script>
+</body>
+</html>
